@@ -1,11 +1,12 @@
 use arrow2::array::{Array, StructArray};
 use pyo3::{exceptions::PyOSError, ffi::Py_uintptr_t, prelude::*, types::PyDict, wrap_pyfunction};
-use std::{fs, io};
+use std::{any::Any, fs, io, panic::{catch_unwind, AssertUnwindSafe}};
 
 use peppi::frame::PortOccupancy;
 use peppi::game::{Start, ICE_CLIMBERS};
 use peppi::io::peppi::de::Opts as PeppiReadOpts;
 use peppi::io::slippi::de::Opts as SlippiReadOpts;
+use peppi::io::Error as PeppiError;
 
 mod error;
 use error::PyO3ArrowError;
@@ -58,6 +59,28 @@ fn port_occupancy(start: &Start) -> Vec<PortOccupancy> {
 		.collect()
 }
 
+fn panic_message(payload: Box<dyn Any + Send>) -> String {
+	if let Some(s) = payload.downcast_ref::<&str>() {
+		s.to_string()
+	} else if let Some(s) = payload.downcast_ref::<String>() {
+		s.clone()
+	} else {
+		"unknown panic".to_string()
+	}
+}
+
+fn catch_peppi_panic<T, F>(f: F) -> Result<T, PyO3ArrowError>
+where
+	F: FnOnce() -> peppi::io::Result<T>,
+{
+	match catch_unwind(AssertUnwindSafe(f)) {
+		Ok(result) => result.map_err(PyO3ArrowError::from),
+		Err(payload) => Err(PyO3ArrowError::PeppiError(PeppiError::InvalidData(
+			format!("peppi panic while parsing replay: {}", panic_message(payload))
+		))),
+	}
+}
+
 fn _read_slippi(
 	py: Python,
 	path: String,
@@ -65,10 +88,8 @@ fn _read_slippi(
 ) -> Result<Bound<Game>, PyO3ArrowError> {
 	let pyarrow = py.import("pyarrow")?;
 	let json = py.import("json")?;
-	let game = peppi::io::slippi::read(
-		&mut io::BufReader::new(fs::File::open(path)?),
-		Some(&parse_opts),
-	)?;
+	let mut reader = io::BufReader::new(fs::File::open(path)?);
+	let game = catch_peppi_panic(|| peppi::io::slippi::read(&mut reader, Some(&parse_opts)))?;
 
 	Ok(Bound::new(
 		py,
@@ -101,10 +122,8 @@ fn _read_peppi(
 ) -> Result<Bound<Game>, PyO3ArrowError> {
 	let pyarrow = py.import("pyarrow")?;
 	let json = py.import("json")?;
-	let game = peppi::io::peppi::read(
-		&mut io::BufReader::new(fs::File::open(path)?),
-		Some(&parse_opts),
-	)?;
+	let mut reader = io::BufReader::new(fs::File::open(path)?);
+	let game = catch_peppi_panic(|| peppi::io::peppi::read(&mut reader, Some(&parse_opts)))?;
 
 	Ok(Bound::new(
 		py,
