@@ -32,6 +32,7 @@ class EndMethod(IntEnum):
 	GAME = 2
 	RESOLVED = 3
 	NO_CONTEST = 7
+	SUDDEN_DEATH = 9
 
 @dataclass(slots=True)
 class Scene:
